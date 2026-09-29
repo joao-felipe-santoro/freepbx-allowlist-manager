@@ -1,0 +1,20 @@
+[Unit]
+Description=FreePBX Allowlist Telegram Bot
+After=network.target mariadb.service mysql.service
+Wants=mariadb.service mysql.service
+
+[Service]
+Type=simple
+User=asterisk
+Group=asterisk
+WorkingDirectory=/opt/freepbx-allowlist-system
+EnvironmentFile=/opt/freepbx-allowlist-system/.env
+ExecStart=/opt/freepbx-allowlist-system/.venv/bin/python -m bot
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=allowlist-bot
+
+[Install]
+WantedBy=multi-user.target

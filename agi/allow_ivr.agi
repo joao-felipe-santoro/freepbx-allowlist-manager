@@ -1,0 +1,119 @@
+#!/var/lib/asterisk/venv/bin/python3
+# -*- coding: utf-8 -*-
+"""
+allowlist_ivr.agi
+-----------------
+FreePBX Dynamic Route AGI Script
+
+Called AFTER FreePBX validates the DTMF code.
+Responsibilities:
+  1. Read caller number from channel variables
+  2. Add caller to FreePBX Allowlist (AstDB)
+  3. Notify via Telegram
+  4. Return "SUCCESS" so Dynamic Route can forward the call
+"""
+
+import sys
+import os
+import subprocess
+
+# ─────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID  = os.environ.get("TELEGRAM_CHAT_ID")
+ASTERISK_DB_FAMILY = "allowlist"
+
+# ─────────────────────────────────────────────
+# AGI helpers
+# ─────────────────────────────────────────────
+def agi_send(cmd):
+    sys.stdout.write(cmd + "\n")
+    sys.stdout.flush()
+
+def agi_read():
+    return sys.stdin.readline().strip()
+
+def agi_command(cmd):
+    agi_send(cmd)
+    return agi_read()
+
+def read_agi_env():
+    """Read AGI environment variables sent by Asterisk."""
+    env = {}
+    while True:
+        line = sys.stdin.readline().strip()
+        if not line:
+            break
+        if ":" in line:
+            key, value = line.split(":", 1)
+            env[key.strip()] = value.strip()
+    return env
+
+def set_variable(name, value):
+    agi_command(f'SET VARIABLE {name} "{value}"')
+
+# ─────────────────────────────────────────────
+# FreePBX Allowlist
+# ─────────────────────────────────────────────
+def add_to_allowlist(number):
+    """Add number to FreePBX Allowlist via AstDB."""
+    try:
+        cmd = ["/usr/sbin/asterisk", "-rx", f"database put {ASTERISK_DB_FAMILY} {number} 1"]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        sys.stderr.write(f"AstDB result: {result.stdout}\n")
+        return True
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write(f"AstDB error: {e}\n")
+        return False
+
+# ─────────────────────────────────────────────
+# Notify Telegram Bot
+# ─────────────────────────────────────────────
+def notify_telegram(caller_number):
+    try:
+        import urllib.request
+        import json
+        message = (
+            f"📞 Novo contato adicionado à allowlist!\n"
+            f"Número: {caller_number}\n"
+            f"Acesso liberado via código IVR."
+        )
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = json.dumps({
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=10)
+        sys.stderr.write(f"Telegram notification sent for {caller_number}\n")
+        return True
+    except Exception as e:
+        sys.stderr.write(f"Telegram error: {e}\n")
+        return False 
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+def main():
+    # Read AGI environment
+    env = read_agi_env()
+
+    caller = env.get("agi_callerid", "unknown")
+    sys.stderr.write(f"allowlist_ivr.agi: caller={caller}\n")
+
+    # Add to allowlist
+    added = add_to_allowlist(caller)
+
+    if added:
+        # Notify via WhatsApp
+        notify_telegram(caller)
+        # Return SUCCESS to Dynamic Route — FreePBX will forward the call
+        set_variable("DYNAMIC_ROUTE_RESULT", "SUCCESS")
+        sys.stderr.write(f"allowlist_ivr.agi: {caller} added successfully\n")
+    else:
+        set_variable("DYNAMIC_ROUTE_RESULT", "ERROR")
+        sys.stderr.write(f"allowlist_ivr.agi: failed to add {caller}\n")
+
+if __name__ == "__main__":
+    main()
