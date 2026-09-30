@@ -80,14 +80,104 @@ sudo systemctl status allowlist-bot
 sudo journalctl -u allowlist-bot -f
 ```
 
-## Deploying the AGI script
+## FreePBX IVR Configuration
 
-```bash
-cp agi/allow_ivr.agi /var/lib/asterisk/agi-bin/
-chmod +x /var/lib/asterisk/agi-bin/allow_ivr.agi
+### Full call flow
+
+```
+Inbound Route (DID)
+    └─► Dynamic Route — plays welcome, collects DTMF code, calls AGI
+            ├─► AGI returns SUCCESS → Extensions: <your extension>
+            ├─► AGI returns ERROR   → Terminate Call: Hangup
+            └─► invalid code / timeout → allowlist-denied → Terminate Call: Hangup
 ```
 
-In FreePBX, configure a Dynamic Route to call `allow_ivr.agi` after DTMF validation and branch on `DYNAMIC_ROUTE_RESULT == SUCCESS`.
+The **Dynamic Routes** module handles everything: DTMF collection, AGI lookup, and result routing — no separate IVR module needed.
+
+### 1. Audio recordings
+
+Record or generate the following prompts and upload them via **Admin → System Recordings**:
+
+| Name | Content |
+|---|---|
+| `allowlist-welcome` | "Hello! To register your number, please enter your access code followed by the pound key." |
+| `allowlist-denied`  | "Invalid code. Please try again." |
+
+Use `.wav` or `.mp3` files (16-bit, 8 kHz mono recommended for Asterisk).
+
+### 2. Deploy the AGI script
+
+```bash
+sudo cp agi/allow_ivr.agi /var/lib/asterisk/agi-bin/
+sudo chmod +x /var/lib/asterisk/agi-bin/allow_ivr.agi
+sudo chown asterisk:asterisk /var/lib/asterisk/agi-bin/allow_ivr.agi
+```
+
+Set the required environment variables so the AGI script can reach Telegram. Create `/etc/systemd/system/asterisk.service.d/override.conf` (via `systemctl edit asterisk`):
+
+```ini
+[Service]
+Environment="TELEGRAM_TOKEN=your_token_here"
+Environment="TELEGRAM_CHAT_ID=your_chat_id_here"
+```
+
+Then reload: `sudo systemctl daemon-reload && sudo systemctl restart asterisk`
+
+### 3. Create the Dynamic Route
+
+**Applications → Dynamic Routes → Add Dynamic Route**
+
+**General Options**
+
+| Field | Value |
+|---|---|
+| Dynamic Route Name | `allowlist-ivr` |
+
+**DTMF Options**
+
+| Field | Value |
+|---|---|
+| Enable DTMF Input | Yes |
+| Announcement | `allowlist-welcome` |
+| Max Digits | _(your code length)_ |
+| Timeout | `10` |
+| Validation | _(your access code)_ |
+| Invalid Retries | `2` |
+| Invalid Recording | `allowlist-denied` |
+| Invalid Destination | Terminate Call → Hangup |
+
+**Saved Variables**
+
+| Field | Value |
+|---|---|
+| Saved input variable name | `DTMF_CODE` |
+| Saved result variable name | `DYNAMIC_ROUTE_RESULT` |
+
+**Lookup Source**
+
+| Field | Value |
+|---|---|
+| Source Type | AGI |
+| Enable substitutions | No |
+| AGI Lookup | `/var/lib/asterisk/agi-bin/allow_ivr.agi` |
+| AGI Result Variable | `DYNAMIC_ROUTE_RESULT` |
+
+**Default Entry**
+
+| Field | Value |
+|---|---|
+| Default Destination | Terminate Call → Hangup |
+
+**Route Entries**
+
+| Match | Destination |
+|---|---|
+| `ERROR` | Terminate Call → Hangup |
+| `SUCCESS` | Extensions → _(your target extension)_ |
+
+### 4. Point the Inbound Route to the Dynamic Route
+
+**Connectivity → Inbound Routes** — set the destination of the allowlist DID to **Dynamic Route: allowlist-ivr**.
 
 ## Bot commands
 
